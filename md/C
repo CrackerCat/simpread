@@ -1,0 +1,59 @@
+> 本文由 [简悦 SimpRead](http://ksria.com/simpread/) 转码， 原文地址 [mp.weixin.qq.com](https://mp.weixin.qq.com/s?__biz=Mzg2NzUzNzk1Mw==&mid=2247484229&idx=1&sn=7d78f9b693c673a50132734f7593e841&chksm=cebb460bf9cccf1d4f84478197f5fb0f48967a4a41f432a0f28b4b2fe510de228744dd250514&scene=21#wechat_redirect)
+
+**Reko 源码和工具的下载**  
+
+https://github.com/uxmal/reko
+
+https://github.com/uxmal/reko/releases/tag/version-0.9.2
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZ5C8a4tNsvuV0icjGjGX1U3JEAHS5nl1BicuDMv1s5OpPaI9GQyTia9ibibg/640?wx_fmt=png)
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZVkpQBeP0aAA8fTCoVbbYMafmledwD4ibhiaULA6ueyE5tnBrUX54KqPA/640?wx_fmt=png)
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZOlQKOw3AtdJwZw7zQjDrtZ3tShOKogB3NYwQD0PZBqxXLvtkh9ibtRg/640?wx_fmt=png)
+
+Reko 反编译工具的简介  
+
+Reko 是一个 C＃项目，包含机器码二进制文件的反编译器。该项目可在 GNU 通用公共许可证下免费获得。该项目包括前端，核心反编译器引擎和后端，以帮助它实现其目标。在撰写本文时，存在命令行，Windows GUI 和 ASP.NET 前端。反编译器引擎以单个可执行文件或反编译器项目文件的形式从前端接收输入。Reko 项目文件包含有关二进制文件的其他信息，有助于反编译过程或格式化输出。然后，反编译器引擎继续分析输入二进制文件。
+
+Windows 环境安装.net 依赖库和 Reko
+
+安装下列. net 依赖组件
+
+Microsoft .NET Framework 4.7.2
+
+安装 Reko 工具
+
+reko-0.9.2.3.msi
+
+Reko 反编译工具的使用方法
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZvib9ryicamY3DxRxOvYticiaQmlzPeBZT7soe9q7niaV1CSJPCrLFdJoyyQ/640?wx_fmt=png)
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZaXGV8M2MF1KbV1834NHo4w5kicU61tGJmKSA4CLe6V23SuPzEwq0cCA/640?wx_fmt=png)
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZemjAuiaEaqsNYJGDGK4PGbQMBal2mKfMCFpMvyBkSc5M3tjlUZ4ZmJA/640?wx_fmt=png)
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZ3AWhc19m66ZGkiaJIWaxsTGEskjtETtQey1xGVInJVib1KsTbqicFTupA/640?wx_fmt=png)
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZFWTW4SiazTsn24WKZ9Ptiae9aqxsBP6THRBxFOlxMLeEUIvXQaAWIia2A/640?wx_fmt=png)
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZ9fJ8zibuRZgbvjzVbWicp159aMa8N4lqNMly1CZjQo7NOwXLO5egm2Iw/640?wx_fmt=png)
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZdriaenkickPNSQLxDHP2C9sY582UbGeibZ4cuKZmLTTudP6e29B4IuD1A/640?wx_fmt=png)
+
+ Reko 的目标是支持各种处理器体系结构和可执行文件格式的反编译，许多软件许可证禁止对其机器代码二进制文件进行反编译或其他逆向工程。仅当具有反编译二进制文件的合法权限时才使用此反编译器。
+
+Ubuntu 环境安装 Mono、Monodevelop IDE
+
+sudo apt-get install mono-complete
+
+sudo apt-get install monodevelop
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZOibGS5Fx2b3ZdEeaXcGUZh1iaDWuaibv5xvFVQCic5AIDjN8KHaicnWqqEw/640?wx_fmt=png)
+
+**关注公众号，获取更多相关文章:**
+
+![](https://mmbiz.qpic.cn/mmbiz_jpg/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZpHlgYF8czR6K856p6okMY6HR4TfFNiciaL01RvwH8H3fPpHxNZItOupw/640?wx_fmt=jpeg)
+
+![](https://mmbiz.qpic.cn/mmbiz_png/LtmuVIq6tF1oKCbibC1QUXfVLiczlfuiacZnibRGNZwKudmEQepic26FHS0JEzbQwca69ruvMHict8321z62ZfS5s1Yw/640?wx_fmt=png)
