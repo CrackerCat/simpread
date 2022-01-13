@@ -1,0 +1,117 @@
+> 本文由 [简悦 SimpRead](http://ksria.com/simpread/) 转码， 原文地址 [www.ashw.io](https://www.ashw.io/blog-hypervisor-1)
+
+> Introduces some key concepts and then kick-starts development with an example of how to boot a 64-bit......
+
+The hypervisor entry point in EL2 is defined in [_entry2.S_](https://github.com/ashwio/arm64-hypervisor-tutorial/blob/part-01/source/entry2.S):
+
+```
+    .data
+    hello_world:
+        .ascii "Hello, world!\0"
+
+    globalfunc entry2
+        ADRP    x0, dummy_vectors
+        MSR     VBAR_EL2, x0
+        ADRP    x0, _stack_start
+        MOV     sp, x0
+        BL      pl011_init
+        ADR     x0, hello_world
+        BL      pl011_puts
+        B       .
+    endfunc entry2
+
+```
+
+Here we also install another dummy vector table, initialise the stack pointer, enable the model’s PL011 UART, then print “Hello, world!” over it.
+
+The PL011 driver functions are in [_pl011.S_](https://github.com/ashwio/arm64-hypervisor-tutorial/blob/part-01/source/pl011.S), and the keen-eyed among you may notice that _pl011_init()_ doesn’t do a full initialisation; this is because the UART is not fully modelled on the Armv8-A Foundation Platform and is instead piped in/out over a local Telnet connection, so we don’t need to worry about setting the word length or baud rate and can instead just clear any flags and enable the UART:
+
+```
+    /*
+     * Initialise the PL011 UART with Tx and Rx enabled.
+     */
+    globalfunc pl011_init
+        LDR     x0, =PLATFORM_PL011_BASE
+        STR     wzr, [x0, #CR]
+        STR     wzr, [x0, #ECR]
+        STR     wzr, [x0, #DR]
+        LDR     w1, =0x301
+        STR     w1, [x0, #CR]
+        RET
+    endfunc pl011_init
+
+```
+
+_PLATFORM_PL011_BASE_ is defined as 0x1C09_0000 in [_platform.h_](https://github.com/ashwio/arm64-hypervisor-tutorial/blob/part-01/include/platform.h), matching the base address of the PL011 UART on the Armv8-A Foundation Model; you can find the full system memory map [here](https://developer.arm.com/products/system-design/fixed-virtual-platforms/docs/dui0677/d/programmers-reference/armv8-a-foundation-model-memory-map).
+
+We use simple polled I/O to print a single ASCII character over the PL011 UART, and if the character is a newline ‘\n’ then we first print ‘\r’:
+
+```
+    globalfunc pl011_putc
+        LDR     x1, =PLATFORM_PL011_BASE
+        .macro wait_for_tx_ready
+            1:
+                LDR     w2, [x1, #FR]
+                MOV     w3, #(FR_TXFF | FR_BUSY)
+                AND     w2, w2, w3
+                CBNZ    w2, 1b
+        .endm 
+        wait_for_tx_ready
+        CMP     w0, #ASCII_NL
+        B.NE    2f
+        MOV     w2, #ASCII_CR
+        STR     w2, [x1, #DR]
+        wait_for_tx_ready
+    2:
+        STR     w0, [x1, #DR]
+        RET
+    endfunc pl011_putc
+
+```
+
+Note that this function is not thread-safe, but that’s OK at this stage.
+
+The GNU gas assembly syntax allows for special reusable numeric labels that can be referenced using _b_ for first occurrence searching backwards or _f_ for first occurrence searching forwards; for example, _CBNZ w2, 1b_ means “conditionally branch backwards to the closest _1_ label if _w2_ is non-zero”, while _B.NE 2f_ means “conditionally branch forwards to closest _2_ label if the ALU flags condition code NE (Not Equal) is true”.
+
+To print an ASCII string we simply print each individual character using _pl011_putc()_ until reaching a null character:
+
+```
+    globalfunc pl011_puts
+        push    x20, x30
+        MOV     x20, x0
+    1:
+        LDRB    w0, [x20], #1
+        CBZ     w0, 2f
+        BL      pl011_putc
+        B       1b
+    2:
+        pop     x20, x30
+        RET
+    endfunc pl011_puts
+
+```
+
+Note the use of _push_ and _pop_ here, which are convenience macros defined in [_asm.h_](https://github.com/ashwio/arm64-hypervisor-tutorial/blob/part-01/include/asm.h) like _globalfunc_ and _endfunc_; while previous versions of the Arm architecture had native _PUSH_ and _POP_ instructions based on _LDM_ and _STM_ (Load/Store Multiple), these instructions were removed in 64-bit Armv8-A and need to be constructed manually using regular loads and stores, or the new _LDP_ and _STP_ (Load/Store Pair) instructions:
+
+```
+    /* Stack 1-2 registers. */
+    .macro push reg1:req, reg2:vararg
+        .ifnb reg2
+            STP     \reg1, \reg2, [sp, #-16]!
+        .else
+            STP     \reg1, xzr, [sp, #-16]!
+        .endif
+    .endm
+
+    /* Pop 1-2 registers. */
+    .macro pop reg1:req, reg2:vararg
+        .ifnb reg2
+            LDP     \reg1, \reg2, [sp], #16
+        .else
+            LDP     \reg1, xzr, [sp], #16
+        .endif
+    .endm
+
+```
+
+That same document defines register conventions such as _x30_ being the link register, as well as which registers must be preserved between function calls and which can be trampled over by the callee. In the case of _pl011_puts()_ we need to preserve the pointer to the next ASCII character between calls to _pl011_putc()_, so we put it in callee-saved register _x20_. However, the code that called _pl011_puts()_ may itself have put something in _x20_ that it needs preserving, hence we stack it then restore it before returning at the end of the function. We also need to stack _x30_ as our return address will be trampled by the calls to _pl011_putc()_.
