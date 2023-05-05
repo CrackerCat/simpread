@@ -1,0 +1,50 @@
+> 本文由 [简悦 SimpRead](http://ksria.com/simpread/) 转码， 原文地址 [infosecwriteups.com](https://infosecwriteups.com/flutter-hackers-uncovering-the-devs-myopia-part-1-6c316be56b13)
+
+> Life hack for understanding Flutter Application through source code leaks
+
+Life hack for understanding Flutter Application through source code leaks
+-------------------------------------------------------------------------
+
+![](https://miro.medium.com/v2/resize:fit:875/1*QcuvtnLV0e65Ie_dhXO-1A.png)
+
+> This writings is a bridging prerequisites before diving deeper into reverse-engineering and leveraging an unknown vulnerability in a Flutter Android Application for bug bounty or penetration testing
+
+![](https://miro.medium.com/v2/resize:fit:875/1*TDKpPHKPvCfxtlQZIvPRNg.png)
+
+Many frameworks have opened the ease of developing a mobile application today. There are a lot of various framework with different programming language that sits on top of them. Java is chosen as the one for basic Android Development since it’s pretty easy to learn and sticks to its main purpose although they only use it as a syntax but Android itself isn’t compiled to JVM. And once we’re talking about Android NDK, C/C++ will also be discussed since we’ll also talk about native applications and et cetera.
+
+But what if instead, we use [**Dart**](https://dart.dev/) language to develop an Android Application? In case you’ve heard it just now, **Dart is a programming language that has been believed to be optimized at client-side and the output of this program may be supported on any platform**. **Dart** itself is developed by Google and some says that this programming language is beginner-friendly.
+
+Then it comes another component called **Flutter**. It’s originally an UI Development Kit, but it uses **Dart** as a backend bridges for communication between the package’s components. That’s why **Flutter** has its own GUI rendering and the developer has its own free-will to control all of those layouts at ease and it’s really fast since **Flutter** relies on [JIT (Just-In Time)](https://www.freecodecamp.org/news/just-in-time-compilation-explained/) for development without intermediary bridge. **Dart** has been chosen to fill out the gap of the JIT drawbacks, since **Dart** uses [AOT (Ahead of Time)](https://levelup.gitconnected.com/just-in-time-jit-and-ahead-of-time-aot-compilation-in-angular-8529f1d6fa9d). This makes a perfect combination between **Flutter** and **Dart** since when the application is being launched, AOT takes a part of it so this framework maintains the optimal UX and performance. It also makes it a full SDK as well and can be run cross-platform (Windows, macOS, Linux).
+
+![](https://miro.medium.com/v2/resize:fit:875/1*T-M1TzIFE9bSb6JiywWRsw.png)
+
+**Dart** SDK itself has a capability to generate snapshots. This snapshot is required for **Dart** to speed up the process of the program to run. The snapshot in this context is not referred as a program state just like VM snapshot or anything, but more like a serialized-binary package file to reduce the start-up time and its called as [**Kernel Snapshots**](https://github.com/dart-lang/sdk/wiki/Snapshots) as the first to be introduced. Later then, **JIT Snapshot** and **AOT Snapshot** are introduced yet it’s not cross-platform.
+
+In the **Flutter** application, this snapshot holds a crucial role since it saves the compiled source code as well yet it acts as a [“stripped” ELF binary](https://linux.die.net/man/1/strip). This is intended behavior but we can still recover the function names of it and it’ll be covered in part two. The amazing fact is that each of the snapshots version has a difference so as a reverse engineer, you’ll need to check out how **Dart** generate its snapshots, although we won’t find much information about it.
+
+When the Flutter apps is built, we’ll see two libraries such as **libflutter.so** and **libapp.so**, and note that **libflutter.so** itself is a flutter engine which is wrapped as a shared object, as well as the **libapp.so** format. The mentioned **libapp.so** is our source code itself in a binary format (snapshot).
+
+![](https://miro.medium.com/v2/resize:fit:734/1*ainqKLenNzKfwzT4d8XNXw.png)
+
+If you want to take a deeper look about how the ROData, Dart objects and the struct mappings, you may refer to this awesome blog written by [Andre Lipke](https://blog.tst.sh/reverse-engineering-flutter-apps-part-1/).
+
+![](https://miro.medium.com/v2/resize:fit:875/1*HgE3tj4LPg62xngJeHTAsQ.png)
+
+One of the mistake when the developers would like to release their application, either it’s a website or mobile apps and any kind of digital infrastructure is when they forget to turn off the **debug mode**. The same goes on a Flutter Application, especially when they need to build the mobile application in process.
+
+What’d it be when the application still in a debug mode? Users, especially those who are aware or sensitive about their information, may see some additional information that possibly disclose a confidential information such as a application logging verbosity, PII and et cetera. This would bring a lot of questionable thoughts from the public / consumer, are their data being protected seriously or not.
+
+**Flutter** has three types of build-models. The `debug` model , `profile` model and the real public `release` model have a significant differences. This build model is designated by the framework itself as the way they compile the app. In the `debug` mode, debugging is enabled and thus the app can be debugged via emulator. This mode is usually when the developer starts to develop the app in the middle phase where debugging and logging are necessary to check the correct functionalities. In the `profile` mode, the main purpose on how this mode born is due to performance analysis. And in the `release` mode, it means the app is readily to be submitted to the Play Store or App Store. The compilation itself is also optimized and the size is reduced.
+
+Some company that may start focusing on the flutter apps development may ignore those mode necessities. However, it’s really a bad security practice when they want to launch the application that is still in `debug` mode. This is because that when **Flutter** compiles the source code into the **Dart** **Kernel Bytecode,** it’s producing a `.bin` file called `kernel_blob.bin` .
+
+Given a scenario that the company wants you to do a black-box penetration testing on their flutter-based APK so that you need to analyze the execution flow of the app statically and dynamically. First, you need to make sure whether the application is in `release` mode instead of `debug` mode. When we are decompiling the APK using `apktool` , the first thing you need to take a look is the `assets/flutter_assets` folder. If `kernel_blob.bin` exists inside of that folder, then it’s game over for them. We can extract their application source codes from there easily without any specific tools.
+
+![](https://miro.medium.com/v2/resize:fit:369/1*O6cMpSg6b2MCde5v8itTvg.png)
+
+We may then proceed to extract the functions or classes that are responsible for the application itself using a classic `grep/findstr` to find a pattern-based string, such as API Key leaks, usernames, passwords and et cetera. You can also try to grab a default Flutter widget function name such as `MyApp()` to get the main entry point of the source code if you’re lucky enough.
+
+![](https://miro.medium.com/v2/resize:fit:875/1*QfwHy-omAV1N21UPhF83ew.png)
+
+What if the company wants you to do another black-box penetration testing again in their own private program and this time, they are using the release model so that the dart kernel bytecode doesn’t exist anymore in their application’s assets folder? The Dart source code itself won’t be appeared in the JVM package of the app, so that we will dive into the low level perspectives of the static & dynamic analysis. This is covered in [Part 2](https://infosecwriteups.com/flutter-hackers-uncovering-the-devs-myopia-part-2-598a44942b5e)! I also leveraged this concept into the CTF challenge contest and you can find it in the [second part](https://infosecwriteups.com/flutter-hackers-uncovering-the-devs-myopia-part-2-598a44942b5e) as well.
