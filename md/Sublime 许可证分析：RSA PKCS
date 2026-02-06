@@ -1,0 +1,784 @@
+> 本文由 [简悦 SimpRead](http://ksria.com/simpread/) 转码， 原文地址 [www.52pojie.cn](https://www.52pojie.cn/thread-2090893-1-1.html)
+
+> [md] 作为 Sublime 家的忠实用户，一直都想分析一下，也看过其他大佬的文章，还是决定自己动手试试，探索一下底层的实现细节，顺带研究研究 RSA 以及相关标准的原理文中完整 ...
+
+![](https://avatar.52pojie.cn/data/avatar/002/27/17/34_avatar_middle.jpg)skrets
+
+作为 Sublime 家的忠实用户，一直都想分析一下，也看过其他大佬的文章，还是决定自己动手试试，探索一下底层的实现细节，顺带研究研究 RSA 以及相关标准的原理
+
+文中完整地分析了一下 RSASSA-PKCS#1-v1.5 标准的签名和验证流程，并且简单实现了一下签名的流程
+
+还是再说一下，如果喜欢 Sublime 家软件的话还是最好支持一下正版哦！~（我是学生还没赚钱~
+
+本文基于 ARM 架构的 Sublime Merge 2121 版本进行分析
+
+下载链接：[sublime_merge_build_2121_mac.zip](https://download.sublimetext.com/sublime_merge_build_2121_mac.zip)
+
+用到的工具：Hopper, lldb
+
+### 免责声明
+
+本文仅用于**密码学原理、软件许可机制及 PKCS#1 标准的技术研究与学习交流**目的。文中涉及的 Sublime Merge 许可证结构分析、算法原理说明及相关示例，均不构成对任何商业软件的破解、绕过授权或非法使用的建议或支持。
+
+本文所提及的 **Keygen** 相关内容仅作为**理论研究、逆向工程方法论探讨及跨平台实现思路的示例说明**，不鼓励、不支持、也不倡导将其用于任何违反软件许可协议、法律法规或侵犯软件著作权的行为。任何基于本文内容产生的实际使用行为，均由使用者自行承担相应的法律责任。
+
+Sublime Merge 及其相关商标、版权和软件著作权均归其原作者或所属公司所有。若你在实际工作或长期使用中依赖该软件，请**支持正版**，购买合法授权以支持开发者。
+
+作者不对因阅读或使用本文内容而导致的任何直接或间接后果承担责任。
+
+### 定位关键函数
+
+我们依然可以从字符串来入手，随便输入点东西，点 Use License 就会有无效许可证的弹窗
+
+![](https://attach.52pojie.cn/forum/202602/06/202244iv5bihb5qp3vw83v.png)
+
+在 Hopper 里可以直接搜到这个字符串 "Please check that you have entered all lines from the license key, including the BEGIN LICENSE and END LICENSE lines."
+
+macOS 版本并没有抹去符号，我们可以看到它的函数名是`show_invalid_key(void*)`，查引用可以看到一个`switch`表的跳转结构
+
+![](https://attach.52pojie.cn/forum/202602/06/202256zv8ez82fxnij2wsl.png)
+
+这里对应的其他的分支也都是激活失败的弹窗，往上看看
+
+![](https://attach.52pojie.cn/forum/202602/06/202259k1spf1fbrbassy10.png)
+
+可以看到，当`_OUTLINED_FUNCTION_11988`函数返回值是`0x119`时才不会走到这个激活失败的分支
+
+通过`lldb`动态调试可以看到传入的参数，其中`x0`包含了一个指向许可证字符串的指针，这应该就是核心的验证函数了
+
+这个函数很短，其实是对另一个函数的封装
+
+```
+_OUTLINED_FUNCTION_11988:
+add        x4, x8, #0x4
+add        x5, x8, #0x10
+b          apple_fruit(string const&, string*, int*, int*, int*, bool*)
+
+```
+
+接下来就是对这个`apple_fruit` (`0x1001cd338`) 函数的分析
+
+### 许可证格式分析 Part1
+
+假装我并不知道 Sublime 的许可证长什么样，来试试从零把它的许可证格式分析出来
+
+这个函数先上来会判断公钥是否解密并加载公钥，我们先不管它，看看对许可证格式的检查
+
+![](https://attach.52pojie.cn/forum/202602/06/202302ifpphfrvwqbvuqy0.png)
+
+上来先检查许可证里是是否出现了 "Preview License"，如果有出现就直接用 "Single User License" 来替代~（好粗暴的解决方式~
+
+往下可以看到它从栈上分配了一些空间，然后调用解析许可证的函数 (`0x10009d8ac`)，当成功时应返回 1
+
+```
+loc_1001cd3cc:
+bl         _OUTLINED_FUNCTION_5610
+       ; Stored some zeros…
+add        x24, sp, #0x28
+add        x0, sp, #0x8 ; argument #1
+add        x1, sp, #0x70 ; argument #2
+add        x2, sp, #0x24 ; argument #3
+add        x3, sp, #0x58 ; argument #4
+add        x4, sp, #0x40 ; argument #5
+add        x5, sp, #0x28 ; argument #6
+add        x6, sp, #0xa0 ; argument #7
+bl         parse_license(string const&, string*, int*, string*, string*, string*, string*)
+cbz        w0, loc_1001cd5e4
+
+```
+
+这个函数上来就是一波谜之操作，这其实是判断`string`类型是否用了短字符串优化 (SSO)，然后取出了`data()`指针
+
+```
+ldrsb      w8, [x0, #0x17]      ; 先取出string类型的最后一个字节
+ldr        x9, [x0]                     ; 取出data()指针（长字符串）
+cmp        w8, #0x0
+csel       x25, x9, x0, lt      ; w8 < 0 长字符串，否则短字符串（直接从对象指针处开始）
+
+```
+
+然后是一层循环，通过`'\r'`和`'\n'`把许可证分开并加入一个`vector<string>`的数组里，这里我改了下函数名方便阅读
+
+![](https://attach.52pojie.cn/forum/202602/06/202305ramzzcfuyrefpmac.png)
+
+在`str_end`处退出了分割许可证的循环，然后对拆分出来的`vector<string>`里面每个字符串调用`trim(string&)`
+
+就是去除字符串首尾的空格与制表符`'\t'`
+
+然后下面对把`trim`后的空字符串`erase`掉了，就不贴代码了
+
+![](https://attach.52pojie.cn/forum/202602/06/202308qoqfjsygz9yy9qnj.png)
+
+这里把`vector<string>`的`end()`和`begin()`指针相减，与`0x138`做比较，一个`string`占`0x18`，说明**许可证应该有 13 行**
+
+而且第一行和第十三行没用会直接删掉，得到中间的十一行
+
+![](https://attach.52pojie.cn/forum/202602/06/202310kz2v613wvl2da81l.png)
+
+这里取出了**许可证的第三行**进行比较，**可以是 "Single User License"，或者 "Unlimited User License"**，还有一个分支是用`atoi()`解析了开头的一个整数，这里的`w0`指的应该是许可证用户数量，为 0 就是 Unlimited
+
+![](https://attach.52pojie.cn/forum/202602/06/202312ste4z83yyelxnvvy.png)
+
+然后用`strstr`判断**第四行**里是否**出现了`'-'`**，然后把第四行用`-`分割，并存到传入参数的地址里
+
+这就是最后一个解析成功的判断了，走通这个它就会返回 1 表示**解析成功**
+
+注意这里第四行是可以有两个`'-'`的，但我好像没见过这样的许可证，不过很快就会知道原因了
+
+后面接着就是把**第五行到第十二行拼起来**形成一个长字符串，并删去了空白字符，截图略
+
+到这里我们可以总结一下这个`parse_license`函数从参数返回了哪些值
+
+```
+arg3 -> license seats
+arg4 -> line4.split('-')[0].trim()
+arg5 -> line4.split('-')[1].trim()
+arg6 -> line4.split('-')[2].trim()
+arg7 -> concat(line5..12).remove(' ', '\t')
+
+```
+
+（奇怪的伪代码，意会一下）
+
+回到之前的`apple_fruit`，我们继续
+
+### 签名验证分析
+
+`parse_license`下面接着的是一个很简单的函数
+
+```
+generate_data(string, char* const&, int, string, char* const&, string, char* const&, string, char* const&)
+
+```
+
+它把`parse_license`分开来的部分按照许可证用户数量又拼回去了
+
+分别是
+
+```
+1 -> "%s\nSingle User License\n%s-%s"
+0 -> "%s\nUnlimited User License\n%s-%s"
+? -> "%s\n%d User License\n%s-%s"
+
+```
+
+这里我们就知道上面的`atoi`是用来干什么的了，来识别像`999 User License`这样的许可证
+
+如果第四行有两个`-`就在后面补一个`-%s`
+
+这个设计其实还是很合理的，先解析再拼接就不至于说加个空格或者换行许可证就失效了
+
+用`generate_data`拼出这前几行后，就是签名验证了，在`apple_fruit`里紧接的就是
+
+```
+verify_signature(string const&, string const&, string const&)
+
+```
+
+从`lldb`里可以看到三个参数分别是：
+
+1.  前面`generate_data`生成的字符串
+2.  `parse_license`返回的第 5 行到第 12 行拼起来的字符串
+3.  DER 格式转了 16 进制的公钥字符串`"30819D300D0609..."`
+
+这是 PEM 格式的公钥
+
+```
+-----BEGIN PUBLIC KEY-----
+MIGdMA0GCSqGSIb3DQEBAQUAA4GLADCBhwKBgQDYe6JFYvfF0UoM+xK5dAwZXGvc
+fm1uySusDrKdWeHZrmeJDCuIw6vcr/59SjPcwb++UxolHO8Mkj8GvnmyMoVZrP7p
+htXhXk0XZupWxOEGV/p02wl3w/t1greM1Huyx/myUrSpRj0V9q5u6SN9VMVIG/Pg
+sJkgGQvPsx5b5QnDOwIBEQ==
+-----END PUBLIC KEY-----
+
+```
+
+好，开始分析这个最关键的`verify_signature`吧
+
+![](https://attach.52pojie.cn/forum/202602/06/202314ovvvkc5f9zdbfri9.png)
+
+这 CFG 图看起来还有点小复杂，曾经令我望而却步，~只好直接改 ret 1~，今天就来啃啃硬骨头
+
+首先根据一些错误提示信息，可以看出它用的加密库是`libtomcrypt`
+
+函数头部先注册了使用的数学库提供者，还加载了 SHA1 哈希
+
+```
+adrp       x0, #0x100655000 ; _ltc_mp@PAGE
+add        x0, x0, #0xd70 ; _ltc_mp@PAGEOFF, argument "dst" for method imp___stubs__memcpy, _ltc_mp
+adrp       x1, #0x100629000 ; _ltm_desc@PAGE
+add        x1, x1, #0x890 ; _ltm_desc@PAGEOFF, argument "src" for method imp___stubs__memcpy, _ltm_desc
+mov        w2, #0x1a0   ; argument "n" for method imp___stubs__memcpy
+bl         imp___stubs__memcpy ; memcpy
+adrp       x22, #0x100654000 ; _hash_descriptor@PAGE
+add        x22, x22, #0x370 ; _hash_descriptor@PAGEOFF, _hash_descriptor
+mov        w24, #0x20
+adrp       x23, #0x100629000 ; _sha1_desc@PAGE
+add        x23, x23, #0xa30 ; _sha1_desc@PAGEOFF, _sha1_desc
+
+```
+
+后面是一些循环用来获取 SHA1 的具体函数指针，看起来是内联展开的`find_hash`函数
+
+再往下走可以看到它计算了`generate_data`返回的字符串的 SHA1 值
+
+![](https://attach.52pojie.cn/forum/202602/06/202317zjzpz2psvs060st3.png)
+
+接着把 16 进制编码的公钥转换成字节数据
+
+```
+ldrb       w8, [x21, #0x17]
+sxtb       w9, w8
+ldr        w10, [x21, #0x8]
+cmp        w9, #0x0
+csel       w23, w10, w8, lt
+mov        w8, #0x2
+ldr        x9, [x21]
+csel       x0, x9, x21, lt ; argument #1 for method hex_to_bytes(char const*, unsigned char*, int)
+sdiv       w22, w23, w8
+add        x1, sp, #0x1, lsl #12
+add        x1, x1, #0x148 ; argument #2 for method hex_to_bytes(char const*, unsigned char*, int)
+       ; x1 -> 输出字节
+       ; x0 -> 16进制字符串的长度
+       ; x2 -> 输出字节的长度
+mov        x2, x22      ; argument #3 for method hex_to_bytes(char const*, unsigned char*, int)
+bl         hex_to_bytes(char const*, unsigned char*, int)
+adrp       x8, #0x100655000 ; _ltc_mp@PAGE
+ldr        x8, [x8, #0xd70] ; _ltc_mp@PAGEOFF, _ltc_mp
+cbz        x8, loc_1000e94e8
+
+```
+
+这里紧接着的这个复杂的函数块，调用了`ltc_init_multi`，`der_decode_sequence_ex`，`der_decode_sequence_multi`等一些偏低层的复杂函数
+
+![](https://attach.52pojie.cn/forum/202602/06/202319h6r3ds3bbtlbjpdq.png)
+
+但如果仔细看上面的错误日志，很容易猜到这是导入 RSA 密钥的函数，我开始还在这里卡了好一会
+
+```
+"../../../third_party/libtomcrypt/src/pk/rsa/rsa_import.c"
+
+```
+
+### RSASSA-PKCS#1-v1.5 详解
+
+加载完公钥接下来就是用公钥进行 RSA 的签名验证了，这整个流程在这里被展开了，我们一步一步地来分析
+
+```
+loc_1000e90dc:
+str        w23, [sp, #0x3a2 + var_2B2] ; CODE XREF=verify_signature+1632
+bl         _OUTLINED_FUNCTION_4513 ; _OUTLINED_FUNCTION_4513
+ldrb       w8, [x20, #0x17]
+bl         _OUTLINED_FUNCTION_8937 ; _OUTLINED_FUNCTION_8937
+ldp        x10, x9, [x20]
+       ; x23 -> line 5..12 字符串的长度
+csel       x23, x9, x8, lt
+lsr        x22, x23, #0x1
+csel       x0, x10, x20, lt ; argument #1 for method hex_to_bytes(char const*, unsigned char*, int)
+       ; x1 -> 输出字节
+add        x1, sp, #0x148 ; argument #2 for method hex_to_bytes(char const*, unsigned char*, int)
+       ; x22 -> 输出字节的长度
+mov        x2, x22      ; argument #3 for method hex_to_bytes(char const*, unsigned char*, int)
+       ; x0 -> line 5..12 字符串
+bl         hex_to_bytes(char const*, unsigned char*, int) ; hex_to_bytes(char const*, unsigned char*, int)
+       ; 16进制字符串转字节数据
+adrp       x20, #0x100655000 ; qword_100655dd8@PAGE
+add        x20, x20, #0xdd8 ; qword_100655dd8@PAGEOFF, qword_100655dd8
+ldr        x8, [x20]    ; qword_100655dd8
+ldr        x0, [sp, #0x3a2 + var_29A]
+       ; x8 -> count_bits -> 0x400 (1024位) 获取RSA公钥模数大小
+blr        x8
+mov        x21, x0
+ldr        x8, [x20, #0x28] ; qword_100655e00
+ldr        x0, [sp, #0x3a2 + var_29A]
+       ; unsigned_size 模数写作字节的长度
+blr        x8
+cmp        x0, x23, lsr #1
+       ; x0 -> 模数字节长度 (1024 / 8 = 128)
+       ; x23 -> line 5..12 字符串长度 / 2
+b.ne       loc_1000e9478
+
+```
+
+首先判断了签名数据的长度，把它与公钥模数的位数对比
+
+从上面可以看出来**许可证第 5 行到第 12 行都是 16 进制字符串**，且加起来 * _长度为 128_ 2 = 256**
+
+```
+mov        x20, x0
+str        x22, [sp, #0x3a2 + var_262]
+adrp       x8, #0x100655000 ; qword_100655ef0@PAGE
+ldr        x8, [x8, #0xef0] ; qword_100655ef0@PAGEOFF, qword_100655ef0
+       ; x0 -> 转换后的签名数据
+add        x0, sp, #0x148
+       ; x3 -> int *outlen
+add        x3, sp, #0x140
+add        x5, sp, #0xf0
+       ; x22 -> inlen 0x80 固定的输入长度
+       ; x20 -> unsigned char *out
+bl         _OUTLINED_FUNCTION_3909 ; _OUTLINED_FUNCTION_3909
+mov        w4, #0x0
+       ; rsa_exptmod 底层的RSA模幂运算
+blr        x8
+mov        w23, #0x0
+cbnz       w0, loc_1000e94cc
+
+```
+
+接下来直接对这个签名数据进行模幂运算，也就是 RSA 的底层数学运算
+
+#### RSA 数学原理
+
+这里稍微回顾一下 **RSA** 加密解密的**底层数学原理**
+
+$N$ 是两个素数 $p,q$ 的乘积，取 $r=\varphi(N)$（欧拉函数），$e$ 是一个与 $r$ 互质的数，$d$ 为 $e$ 关于 $r$ 的模逆元（即 $ed\equiv1\pmod{r}$）
+
+定义公钥 $(N,e)$，私钥 $(N,d)$，需要加密的消息 $m$，加密过的消息 $c$
+
+那么加密操作为 $c=m^d\pmod{N}$
+
+对应解密操作为 $m=c^e\pmod{N}$
+
+这个加解密过程的正确性这里就不讨论了，感兴趣可以去百科上了解详细的数学证明
+
+那么在这里 `rsa_exptmod` 干了什么呢？
+
+首先把输入的**签名数据**按**大端序**当作一个大整数读入作为密文 $c$，根据公钥提供的模数和指数计算 $m = c^e\pmod{N}$，再把 $m$ 按**大端序**写为输出的数据得到**编码消息**
+
+因为这里的运算都是在模域下进行的，也就是对 $N$ 取模，所以输入输出的大小都会是和 $N$ 同样的 1024 位（128 字节）
+
+好，那我们回到签名验证流程接着看
+
+![](https://attach.52pojie.cn/forum/202602/06/202321a55mfx5o22rqm2rf.png)
+
+#### PKCS #1 v1.5 Padding
+
+这部分在读取编码消息`EM`开头的 **PKCS #1 v1.5 Padding**，它长这样：
+
+```
+EM = 0x00 || 0x01 || PS || 0x00 || M
+
+```
+
+`0`和`1`是固定开头，中间的`PS`为至少 8 字节的`0xFF`填充，`M` 是实际的消息（第二位的`1`表示签名，若为`2`则表示加密）
+
+这里根据前两位来判断是否有 Padding，`w8`是标记的 flag，`x10`为 Padding 的总长度
+
+读取后会有判断，**Padding 的长度要大于等于 11**，否则就会直接跳转到验证失败的分支（这是 PKCS #1 v1.5 标准的要求）
+
+```
+       ; x10 -> padding 长度
+       ; x20 -> rsa解密后的数据
+add        x1, x20, x10
+mov        x0, x21
+bl         outline_memcpy_x23 ; outline_memcpy_x23
+mov        w8, #0x7
+str        w8, [sp, #0x3a2 + arg_1EF6]
+sub        x8, fp, #0xd8
+mov        w9, #0x10
+str        x8, [sp, #0x3a2 + arg_1EFE]
+str        x9, [sp, #0x3a2 + arg_1F06]
+mov        w8, #0x6
+str        wzr, [sp, #0x3a2 + arg_1F0E]
+str        w8, [sp, #0x3a2 + arg_1F36]
+str        xzr, [sp, #0x3a2 + arg_1F46]
+str        xzr, [sp, #0x3a2 + arg_1F3E]
+str        wzr, [sp, #0x3a2 + arg_1F4E]
+mov        w8, #0xd
+str        w8, [sp, #0x3a2 + arg_1E76]
+add        x8, sp, #0x2, lsl #12
+add        x8, x8, #0x248
+mov        w9, #0x2
+str        x8, [sp, #0x3a2 + arg_1E7E]
+str        x9, [sp, #0x3a2 + arg_1E86]
+mov        w8, #0x5
+str        wzr, [sp, #0x3a2 + arg_1E8E]
+str        w8, [sp, #0x3a2 + arg_1EB6]
+str        x20, [sp, #0x3a2 + arg_1EBE]
+str        x22, [sp, #0x3a2 + arg_1EC6]
+str        wzr, [sp, #0x3a2 + arg_1ECE]
+add        x2, sp, #0x2, lsl #12
+add        x2, x2, #0x1c8
+       ; x2 = $sp + 0x21c8
+       ; -> 2 ltc_asn1_list
+bl         _OUTLINED_FUNCTION_3246 ; _OUTLINED_FUNCTION_3246
+       ; w3 = 2 -> outlen
+mov        w3, #0x2     ; argument #4 for method outline_der_decode_sequence_ex
+       ; x0 <- x21 (unpadded data)
+       ; x1 <- x23 (unpadded data length)
+bl         outline_der_decode_sequence_ex ; outline_der_decode_sequence_ex
+       ; int der_decode_sequence_ex(const unsigned char *in, unsigned long  inlen,
+       ;                            ltc_asn1_list *list,     unsigned long  outlen, unsigned int flags);
+cbnz       w0, loc_1000e9480
+
+```
+
+接下来从消息`M`中用`der_decode_sequence_ex`读取了一个长度为 2 的 ASN.1 DER 编码序列
+
+![](https://attach.52pojie.cn/forum/202602/06/202323xuxx87gg7gxo52g0.png)
+
+#### PKCS#1 DigestInfo
+
+可以看出来，两个编码后的元素，**第一个是 SHA1 的 OID**，第二个是前面对`generate_data`返回的字符串**计算的 SHA1 值**
+
+这个其实就是 **PKCS#1 DigestInfo** 的结构
+
+```
+DigestInfo ::= SEQUENCE {
+    digestAlgorithm AlgorithmIdentifier,
+    digest OCTET STRING
+}
+
+```
+
+接着就是把读取到的两个值与期望值分别作比较，都相同时则**返回验证成功**
+
+#### 小总结
+
+我们来总结一下这个验证流程
+
+1.  解码 128 字节 (1024bit) 的签名数据
+2.  用公钥计算 $m=c^e\pmod{N}$ 得到编码消息
+3.  校验 PKCS#1 v1.5 Padding 编码格式
+4.  解析编码消息中的 PKCS#1 DigestInfo 获得 SHA1 值
+5.  把得到的 SHA1 值与原消息的 SHA1 值对比
+
+这是一个标准的 **RSASSA-PKCS#1-v1.5** 签名验证流程
+
+可以参考标准文件的 8.2 节 [https://datatracker.ietf.org/doc/html/rfc8017#section-8.2](https://datatracker.ietf.org/doc/html/rfc8017#section-8.2)
+
+不过这个这个标准已经有些过时而且缺乏安全性了，现在用的多的应该是 OAEP
+
+#### 签名实现
+
+签名和验证的流程是反过来的，了解了底层原理之后，我就想试试看自己实现一个看看
+
+正好最近了解到 zig 可以支持最大位宽为 65535 的整数，那就来试试用它实现一个基于 1024 位 RSA 的签名吧
+
+```
+const u8, inlen: usize, signature: *[128]u8) void {        // 计算消息的SHA1值    var sha1_hash: [20]u8 = undefined;    std.crypto.hash.Sha1.hash(in[0..inlen], &sha1_hash, .{});    // 构造 PKCS#1 DigestInfo 结构    const dlen = 35;    var digest_info: [35]u8 = undefined;    @memcpy(digest_info[0..15], &[15]u8{0x30,0x21,0x30,0x09,0x06,0x05,0x2B,0x0E,0x03,0x02,0x1A,0x05,0x00,0x04,0x14});    @memcpy(digest_info[15..], sha1_hash[0..20]); // 其实在SHA1值前面拼一个固定的前缀就好了    // 给 DigestInfo 加上 PKCS#1 Padding    var encoded_message: [128]u8 = undefined;    encoded_message[0] = 0;    encoded_message[1] = 1;    @memset(encoded_message[2..128-dlen-1], 0xff); // 中间的若干个0xFF    encoded_message[128-dlen-1] = 0;    @memcpy(encoded_message[128-dlen..], digest_info[0..]); // 最后是DigestInfo    // 用私钥计算出签名值    const m = std.mem.readInt(u1024, &encoded_message, .big); // 按大端序读入一个1024bit的整数    const c = key.exptmod(m); // 这一步就是计算 m=c^e\pmod N    std.mem.writeInt(u1024, signature, c, .big); // 按大端序写入一个1024bit的整数    return;}
+
+```
+
+最后用私钥计算签名的那一步`key.exptmod(m)`我封装了一下，用了 CRT（中国剩余定理）和快速幂来优化，如下
+
+```
+fn qpow(b: u1024, e: u512, m: u512) u512 {
+    var res: u1024 = 1;
+
+    const mod: u1024 = m;
+    var exp = e;
+    var base: u1024 = b % mod;
+    while (exp != 0) : (exp >>= 1) {
+        if (exp & 1 == 1) {
+            res = res * base % mod;
+        }
+        base = base * base % mod;
+    }
+
+    return @as(u512, @truncate(res));
+}
+
+const rsa_key = struct {
+    p: u512,
+    q: u512,
+    dp: u512,
+    dq: u512,
+    qinv: u512,
+        // 基本上RSA私钥里都会有存这些字段
+    fn exptmod(self: *const rsa_key, m: u1024) u1024 {
+        const sp = qpow(m, self.dp, self.p);
+        const sq = qpow(m, self.dq, self.q);
+        const diff = if (sp > sq) sp - sq else sp + (self.p - sq % self.p);
+        const h = @as(u1024, self.qinv) * diff % self.p;
+        const c = sq + self.q * h;
+        return c;
+    }
+};
+
+```
+
+这基本就完成了签名的部分，虽然用了一些优化，但速度和正经的加密库还是没得比的，因为 zig 底层大数运算实际就是编译器把它展开成了很多小段来运算，和专门的大数运算库用的一些算法优化相比差的远
+
+不过就结果而言，它和 CryptoPP 中的`RSASSA_PKCS1v15_SHA_Signer`或者是 Security 框架中的`kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA1`得到的结果是完全一样的，我已经很满意了
+
+这样折腾一下还是非常好玩的，我们得以一瞥工程标准实现与数学原理之间的差距与联系
+
+### 许可证格式分析 Part2 + 公钥检查
+
+那么回到 Sublime，我们继续分析剩下的一点点东西
+
+验证完签名首先检查了一下**第四行第一个部分**是否**不等于 "EA7E"**
+
+```
+adrp       x1, #0x1004d3000 ; aEa7e@PAGE
+add        x1, x1, #0x95c ; aEa7e@PAGEOFF, argument #2 for method _OUTLINED_FUNCTION_12513, "EA7E"
+       ; Compare line4 part 1 with "EA7E"
+bl         _OUTLINED_FUNCTION_12513 ; _OUTLINED_FUNCTION_12513
+cmp        w0, #0x0
+mov        w8, #0x119
+       ; w27 = w8 + 1 (if w8 != 0 -> str equal)
+       ; (Should not equal…)
+cinc       w27, w8, ne
+
+```
+
+接着麻烦的就来了，它计算了公钥（DER 格式的 16 进制字符串）的 SHA256 值，并且检查了其中的几位
+
+```
+loc_1001cd468:
+adrp       x8, #0x100656000 ; 0x100656ae0@PAGE
+add        x8, x8, #0xae0 ; 0x100656ae0@PAGEOFF, 0x100656ae0
+       ; der public key hex string
+bl         _OUTLINED_FUNCTION_484 ; _OUTLINED_FUNCTION_484
+csel       x2, x11, x9, lt ; argument #3 for method __Z11crypto_hashPhPKhy
+add        x0, sp, #0xa0 ; argument #1 for method __Z11crypto_hashPhPKhy
+       ; sha256 on public key
+bl         crypto_hash(unsigned char*, unsigned char const*, unsigned long long)
+       ; c6340397059a1d2ab1a41340ced7a5a8f86dea0c227fa940b6e74f0ef84656ea
+ldrb       w8, [sp, #0x240 + var_1A0]
+and        w8, w8, #0xff
+       ; digest[0] == 0xc6
+cmp        w8, #0xc6
+ldrb       w8, [sp, #0x240 + var_192]
+and        w8, w8, #0xff
+       ; digest[14] == 0xa5
+mov        w9, #0xa5
+ccmp       w8, w9, #0x0, eq
+ldrb       w8, [sp, #0x240 + var_18E]
+and        w8, w8, #0xff
+       ; digest[18] == 0xea
+mov        w9, #0xea
+ccmp       w8, w9, #0x0, eq
+ldrb       w8, [sp, #0x240 + var_182]
+       ; digest[30] == 0x56
+mov        w9, #0x56
+ccmp       w8, w9, #0x0, eq
+       ; w25 <- w27 (if public key check passed)
+csel       w25, w27, w26, eq
+       ; Should equal
+cmp        w25, #0x119
+b.ne       loc_1001cd518
+
+```
+
+如果不相等会直接导致激活失败，在`apple_fruit`的下面还有一处不是很起眼的检查
+
+![](https://attach.52pojie.cn/forum/202602/06/202325luoozzdttld5ogtf.png)
+
+非常狡猾啊，在最后检查了 SHA256 的最后一位，而且不相等的话是**随机触发**激活失败，如果你这一次成功了，没准哪次打开就会弹出一个激活失败
+
+总共检查了 5 位 SHA256 的值，下面标记`^^`就是被检查了的位
+
+```
+c6340397059a1d2ab1a41340ced7a5a8f86dea0c227fa940b6e74f0ef84656ea
+^^__________________________^^______^^______________________^^^^
+
+```
+
+我们在替换公钥的时候别忘了还要把这几位更新一下
+
+我们可以直接用`libtomcrypt`生成新的公钥并计算新的 SHA256 值
+
+```
+// X.509 SubjectPublicKeyInfo （公钥DER编码）
+unsigned char encoded_key[200];
+unsigned long encoded_len = sizeof(encoded_key);
+if ((err = rsa_export(encoded_key, &encoded_len, PK_PUBLIC | PK_STD, key))
+    != CRYPT_OK) {
+    printf("rsa_export error: %s\n", error_to_string(err));
+    return -1;
+}
+
+// 编码成16进制字符串
+char hex_key[400];
+unsigned long hex_len = sizeof(hex_key);
+if ((err = base16_encode(encoded_key, encoded_len, hex_key, &hex_len, 1))
+    != CRYPT_OK) {
+    printf("base16_encode error: %s\n", error_to_string(err));
+    return -1;
+}
+
+// sha256
+hash_state md;
+unsigned char sha256_out[32];
+sha256_init(&md);
+sha256_process(&md, (unsigned char *)hex_key, hex_len);
+sha256_done(&md, sha256_out);
+
+```
+
+然后继续是**第四行第一部分**的检查，**可以是 "E52D" 或者是 "E3D2"**，这个字段就是许可证类型了
+
+如果看一眼 Sublime Text，它支持的类型是 **"EA7E" 和 "E3D2"**，诶，有没有发现这个 **"E3D2"** 是通用的，应该是 bundled license 的意思
+
+![](https://attach.52pojie.cn/forum/202602/06/202328glnsjcfjlmgxjnmq.png)
+
+再往下，它把**第四行第二部分**转换成一个**整数**，应该是许可证 ID，然后到全局的黑名单里检查这个 ID 有没有被拉黑（图略）
+
+然后到了第四行第三部分的一个判断，设置了一个很奇怪的 flag，就是这里的`w8`
+
+```
+ldr        w8, [sp, #0x240 + var_21C]
+       ; w8 -> 许可证用户数量
+sub        w9, w24, #0x1
+       ; w24 -> 第四行第三部分转换为整数
+cmp        w8, #0x0
+mov        w8, #0x45c
+movk       w8, #0x7, lsl #16
+       ; w8 = 0x7045c
+ccmp       w9, w8, #0x2, ne
+       ; If not unlimited && w24-1 < 0x7045c
+       ;  -> w8=1
+       ; Otherwise
+       ;  -> w8=0
+cset       w8, lo
+       ; x22 -> arg5
+strb       w8, [x22]
+
+```
+
+虽然不清楚这一段是什么含义，但在调用方可以看到如果`w8=1`的话会触发一个需要升级许可证的弹窗
+
+```
+ldr        x8, [x21, #0x268]
+       ; line4 part3 flag!
+ldrb       w8, [x8, #0x10]
+       ; Show thanks
+adr        x9, #0x1001cdbf0
+nop
+       ; Upgrade required
+adr        x10, #0x1001cdb7c
+nop
+cmp        w8, #0x0
+csel       x0, x10, x9, ne
+
+```
+
+所以说这个**第三段直接去掉就好**，不用管它
+
+到这里`apple_fruit`函数的验证流程就差不多分析完了，上面所有验证都通过了它会**返回`0x119`表示许可证有效**
+
+我们来回顾一下上面分析出来的 **Sublime 许可证格式**
+
+*   共 13 行，第一行和最后一行没用
+*   第 2 行为用户名
+*   第 3 行包含许可证用户数，可以是 "Single User License"/"Unlimited User License"/"%d User License"
+*   第 4 行是用`'-'`分隔的两段数据，第一段是固定的许可证类型 "E52D"/"E3D2"，第二段是一个数字表示许可证 ID
+*   第 5-12 行为签名数据
+
+### 替换公钥 + Keygen
+
+Sublime 存在二进制里的公钥是**按字节异或过的**，具体的解密流程在`apple_fruit`函数头部
+
+![](https://attach.52pojie.cn/forum/202602/06/202330twpppqif33uql32l.png)
+
+用来异或的常量是`0xc6`，异或后会得到 DER 格式编码的公钥，Sublime 这里可能是为了方便处理还转换成了 16 进制字符串
+
+所以我们只需要把生成的 DER 格式公钥也每字节异或上`0xc6`然后替换就好了，然后要更新一下`apple_fruit`函数里校验的那几位 SHA256 值
+
+就可以按照上面的格式生成我们自己的许可证了，别忘了它还有**在线验证**，屏蔽`license.sublimehq.com`就好了，可以直接替换掉这个字符串
+
+又到了喜闻乐见的环节
+
+![](https://attach.52pojie.cn/forum/202602/06/202332dd869cl266iel9bd.png)
+
+结束了吗？还没捏，最后来记录一下实现跨平台 Keygen 过程遇到的一些困难
+
+一个很麻烦的问题是，Sublime 用来异或公钥的这个常量并不是固定的，不同平台不同版本都不一样，很难直接定位并修改
+
+当然，可以把所有可能的常量枚举一遍，共 256 种，但那未免效率太低了
+
+我想到的办法是可以利用异或的性质来确定这个公钥
+
+假设公钥为 $\{a_n\}$，异或后的公钥为 $\{b_n\}$，且 $b_n = a_n\oplus k$，$k$ 为异或的常量
+
+那么就有
+
+ 
+
+$$\begin{align*} b_i\oplus b_{i+1} & = (a_i\oplus k)\oplus(a_{i+1}\oplus k)\\ & = a_i \oplus a_{i+1} \end{align*}$$
+
+也就是说，异或前后，公钥的相邻位的异或值是不变的，我们就可以利用这个来定位异或过的公钥了
+
+在此基础上，再配合上`skip`搜索算法，可以在极短的时间内找到公钥（实测 0.01s 左右）
+
+然后就是公钥的校验了，在不同的平台上，相同架构的有些指令是相同的，所以不需要很多补丁就可以实现跨平台多版本通杀
+
+~（说是不多但也有十几个了）~
+
+最终我用 C 和 Zig 写了一个跨平台的命令行 Keygen，支持所有的系统和架构，已经开源在 Github 了，欢迎来 fork 或者 star
+
+[https://github.com/Antibioticss/sublime-keygen](https://github.com/Antibioticss/sublime-keygen)
+
+用法很简单，简单说下
+
+```
+subkg patch '/Applications/Sublime Merge.app/Contents/MacOS/sublime_merge'
+
+```
+
+`patch` 后面加上主程序二进制的路径，用来替换公钥以及公钥的校验字节
+
+```
+subkg keygen -n hello -t bundle -i 00000000 -s 1026
+
+```
+
+`keygen` 的参数都是可选的，`-n` 指定名字，`-t` 为许可证类型，`-i` 许可证 ID，`-s` 许可证用户数
+
+macOS 上`patch`完了别忘了重签名
+
+```
+codesign -f -s - '/Applications/Sublime Merge.app/Contents/MacOS/sublime_merge'
+
+```
+
+### 后记
+
+终于写完辣！希望大家看完本文也能有收获！
+
+非常感谢 `CryptoPP` 和 `libtomcrypt` 这两个项目，我从文档中学到了不少东西
+
+对了，最后提一嘴，审核大大什么时候可以通过一下我的新头像，感谢！
+
+![](https://avatar.52pojie.cn/images/noavatar_middle.gif)osforum  
+大佬您好，我在 Windows 端执行提示：fopen: Permission denied  
+window 执行提示：.\subkg.exe patch "C:\Users\test1\Desktop\sublime_merge_build_2120_x64"  
+fopen: Permission denied  
+以管理员方式运行 cmd 也不行。  
+是我的执行方式有问题？![](https://avatar.52pojie.cn/data/avatar/000/23/89/94_avatar_middle.jpg)SkinnyTiger ![](https://attach.52pojie.cn/forum/202602/06/212923t0fg0ibg7pkfjpfk.png) 为什么我注册后 就提示需要升级，断网重新注册都不行。Package Control Messages - Sublime Text (LICENSE UPGRADE REQUIRED)![](https://avatar.52pojie.cn/images/noavatar_middle.gif)picoyiyi 一个人完成了这么大的工程，厉害了我的楼主 ![](https://avatar.52pojie.cn/data/avatar/002/27/17/34_avatar_middle.jpg) skrets
+
+> [SkinnyTiger 发表于 2026-2-6 21:30](https://www.52pojie.cn/forum.php?mod=redirect&goto=findpost&pid=54776256&ptid=2090893)  
+> 为什么我注册后 就提示需要升级，断网重新注册都不行。Package Control Messages - Sublime Text (LICENSE  ...
+
+和便携版应该没什么关系，可能是踩到黑名单了  
+重新生成一个许可证试试看，换一个 ID 也许就好了 ![](https://avatar.52pojie.cn/data/avatar/000/23/89/94_avatar_middle.jpg) SkinnyTiger
+
+> [skrets 发表于 2026-2-6 21:57](https://www.52pojie.cn/forum.php?mod=redirect&goto=findpost&pid=54776368&ptid=2090893)  
+> 和便携版应该没什么关系，可能是踩到黑名单了  
+> 重新生成一个许可证试试看，换一个 ID 也许就好了
+
+换 ID 也不行，换安装版也不行 ![](https://avatar.52pojie.cn/data/avatar/000/23/89/94_avatar_middle.jpg) SkinnyTiger
+
+> [osforum 发表于 2026-2-6 22:05](https://www.52pojie.cn/forum.php?mod=redirect&goto=findpost&pid=54776390&ptid=2090893)  
+> 大佬您好，我在 Windows 端执行提示：fopen: Permission denied  
+> window 执行提示：.\subkg.exe patch "C:%use ...
+
+你这是需要关闭程序吧？![](https://avatar.52pojie.cn/images/noavatar_middle.gif)osforum
+
+> [SkinnyTiger 发表于 2026-2-6 22:08](https://www.52pojie.cn/forum.php?mod=redirect&goto=findpost&pid=54776395&ptid=2090893)  
+> 你这是需要关闭程序吧？
+
+没有打开过这个程序。程序也没有后台运行。安装包解压后就执行的命令。![](https://avatar.52pojie.cn/data/avatar/002/27/17/34_avatar_middle.jpg)skrets
+
+> [osforum 发表于 2026-2-6 22:05](https://www.52pojie.cn/forum.php?mod=redirect&goto=findpost&pid=54776390&ptid=2090893)  
+> 大佬您好，我在 Windows 端执行提示：fopen: Permission denied  
+> window 执行提示：.\subkg.exe patch "C:%use ...
+
+patch 后面跟的是 sublime_merge.exe 的路径，你这个写成了文件夹了 ![](https://avatar.52pojie.cn/data/avatar/000/23/89/94_avatar_middle.jpg) SkinnyTiger
+
+> [osforum 发表于 2026-2-6 22:10](https://www.52pojie.cn/forum.php?mod=redirect&goto=findpost&pid=54776397&ptid=2090893)  
+> 没有打开过这个程序。程序也没有后台运行。安装包解压后就执行的命令。
+
+你是路径不对，要指定文件，而不是文件夹
